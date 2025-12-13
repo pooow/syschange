@@ -1,5 +1,11 @@
 # syschange — Отслеживание изменений в системе
 
+[![Development Status](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/pooow/syschange)
+[![Python](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+> ⚠️ **Проект в стадии alpha-разработки.** Функционал работает, но API может меняться. Не рекомендуется для production без тестирования.
+
 **syschange** — это инструмент для создания снимков состояния Linux-системы и анализа изменений между ними. Полезен для отладки, аудита и понимания того, что происходит с системой после установки пакетов, изменения конфигов или обновлений.
 
 ## Зачем это нужно?
@@ -72,10 +78,10 @@
 scan:
   # Где хранятся снимки (по умолчанию: /var/log/system_changes)
   snapshot_base_dir: "/var/log/system_changes"
-  
+
   # Количество потоков для параллельного хэширования (ускоряет работу)
   max_workers: 16
-  
+
   # Какие директории сканировать (по умолчанию: вся корневая ФС)
   dirs_to_scan:
     - "/"
