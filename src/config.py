@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any, Dict
 
 
+# Глобальная переменная для кэширования конфигурации
+# Загружается один раз при первом вызове get_config()
+_CONFIG_CACHE: Dict[str, Any] = None
+
+
 def load_config(config_path: Path = None) -> Dict[str, Any]:
     """
     Загружает настройки из YAML файла.
@@ -45,6 +50,47 @@ def load_config(config_path: Path = None) -> Dict[str, Any]:
             return config
     except yaml.YAMLError as e:
         raise ValueError(f"Error parsing config.yaml: {e}")
+
+
+def get_config(config_path: Path = None) -> Dict[str, Any]:
+    """
+    Возвращает полную конфигурацию из config.yaml.
+    
+    Кэширует конфигурацию при первом вызове для производительности.
+    Используется в syschange.py для получения всех параметров.
+    
+    Args:
+        config_path: Путь к config.yaml (опционально, для тестов)
+    
+    Returns:
+        Полный словарь конфигурации
+    
+    Raises:
+        FileNotFoundError: Если config.yaml не найден
+        ValueError: Если конфиг невалиден
+    
+    Examples:
+        >>> config = get_config()
+        >>> config["scan"]["snapshot_base_dir"]
+        '/var/log/system_changes'
+    """
+    global _CONFIG_CACHE
+    
+    # Если конфиг уже загружен и путь не переопределён - возвращаем кэш
+    if _CONFIG_CACHE is not None and config_path is None:
+        return _CONFIG_CACHE
+    
+    # Загружаем конфигурацию
+    config = load_config(config_path)
+    
+    # Валидируем обязательные параметры
+    validate_config(config)
+    
+    # Кэшируем только при стандартном пути (не для тестов)
+    if config_path is None:
+        _CONFIG_CACHE = config
+    
+    return config
 
 
 def validate_config(config: Dict[str, Any]) -> bool:
