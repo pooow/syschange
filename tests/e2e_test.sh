@@ -29,6 +29,7 @@ echo "Subdir content" > "$TEST_DIR/scan_target/subdir/subfile.txt"
 dd if=/dev/urandom of="$TEST_DIR/scan_target/image.jpg" bs=1024 count=1 2>/dev/null
 
 # 3. Создаем тестовый конфиг (config.yaml)
+# ВАЖНО: Не исключаем /tmp, так как тест работает внутри /tmp!
 cat <<EOF > "$TEST_DIR/config.yaml"
 logging:
   level: "DEBUG"
@@ -43,7 +44,7 @@ scan:
   min_parallel_size: 1048576
 
 excludes:
-  - "/tmp"
+  - "/var/tmp"
   - "*.tmp"
 
 git:
@@ -95,6 +96,7 @@ if [ ! -f "$REPORT" ]; then
 fi
 
 echo -e "\n${GREEN}[Step 4] Verifying report content...${NC}"
+cat "$REPORT"
 
 # Проверяем наличие ключевых изменений в отчете
 if grep -q "scan_target/file1.txt" "$REPORT"; then
