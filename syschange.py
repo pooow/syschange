@@ -178,16 +178,19 @@ def get_groupname(gid: int) -> str:
 # === ПРОВЕРКА ФАЙЛОВ ===
 # ================================
 
-def is_text_file(path: Path, binary_extensions: List[str], max_text_file_size: int) -> bool:
+def is_text_file(path: Path, config: Dict[str, Any]) -> bool:
     """
     Определяет, является ли файл текстовым (строгая проверка).
     Использует несколько эвристик для максимальной точности.
     
     Args:
         path: Путь к файлу
-        binary_extensions: Список расширений бинарных файлов из config.yaml
-        max_text_file_size: Максимальный размер текстового файла из config.yaml
+        config: Полная конфигурация из config.yaml
     """
+    # Извлекаем параметры из конфигурации
+    binary_extensions = config["binary_extensions"]
+    max_text_file_size = config["scan"]["max_text_file_size"]
+    
     # 1. Исключить по расширению — быстрая проверка для бинарных файлов
     if path.suffix.lower() in binary_extensions:
         log.debug(f"Пропущен (бинарное расширение): {path}")
@@ -285,25 +288,24 @@ def get_file_hash(path: Path) -> Optional[str]:
 def scan_filesystem(
     base_dirs: List[str],
     excludes: List[str],
-    binary_extensions: List[str],
-    max_text_file_size: int,
-    min_parallel_size: int,
-    max_workers: int,
+    config: Dict[str, Any],
     collect_hashes: bool = True
 ) -> List[FileInfo]:
     """
     ЕДИНЫЙ ПРОХОД по файловой системе.
     
     Args:
-        base_dirs: Список директорий для сканирования из config.yaml
-        excludes: Список исключений из config.yaml
-        binary_extensions: Список бинарных расширений из config.yaml
-        max_text_file_size: Максимальный размер текстового файла из config.yaml
-        min_parallel_size: Минимальный размер для параллельного хэширования из config.yaml
-        max_workers: Количество потоков из config.yaml
+        base_dirs: Список директорий для сканирования
+        excludes: Список исключений (из config.yaml + CLI --exclude)
+        config: Полная конфигурация из config.yaml
         collect_hashes: Вычислять ли хэши файлов
+    
+    Returns:
+        Список FileInfo объектов с метаданными и хэшами
     """
-    full_excludes = list(excludes)
+    # Извлекаем параметры из конфигурации
+    min_parallel_size = config["scan"]["min_parallel_size"]
+    max_workers = config["scan"]["max_workers"]
     
     results = []
     files_to_hash = []
@@ -318,20 +320,20 @@ def scan_filesystem(
         total_hash_time = 0
         
         for root, dirs, files in os.walk(scan_dir, topdown=True):
-            dirs[:] = [d for d in dirs if not is_excluded(os.path.join(root, d), full_excludes)]
+            dirs[:] = [d for d in dirs if not is_excluded(os.path.join(root, d), excludes)]
             
             for item_name in dirs + files:
                 full_path = Path(root) / item_name
                 str_path = str(full_path)
                 
-                if is_excluded(str_path, full_excludes):
+                if is_excluded(str_path, excludes):
                     continue
                 
                 try:
                     stat_info = full_path.stat()
                     
                     if full_path.is_file():
-                        is_text = is_text_file(full_path, binary_extensions, max_text_file_size)
+                        is_text = is_text_file(full_path, config)
                         file_info = FileInfo(path=full_path, stat_result=stat_info, is_text=is_text)
                         
                         if collect_hashes and is_text:
@@ -618,20 +620,20 @@ def main() -> None:
 
     log.info(f"Запуск '{args.command}' для сессии '{args.session_name}'")
 
+    # Подготовка общих параметров для сканирования
+    scan_params = {
+        "base_dirs": config["scan"]["dirs_to_scan"],
+        "excludes": config["excludes"] + args.exclude,
+        "config": config
+    }
+
     if args.command == "before":
         install_git()
         
         collect_system_state(session_dir, "before")
         
         # ЕДИНЫЙ ПРОХОД по файловой системе
-        file_infos = scan_filesystem(
-            base_dirs=config["scan"]["dirs_to_scan"],
-            excludes=config["excludes"] + args.exclude,
-            binary_extensions=config["binary_extensions"],
-            max_text_file_size=config["scan"]["max_text_file_size"],
-            min_parallel_size=config["scan"]["min_parallel_size"],
-            max_workers=config["scan"]["max_workers"]
-        )
+        file_infos = scan_filesystem(**scan_params)
         
         save_filesystem_snapshot(file_infos, session_dir, "before")
         copy_text_files_to_git(file_infos, session_dir, "before", config["git"])
@@ -647,14 +649,7 @@ def main() -> None:
         collect_system_state(session_dir, "after")
         
         log.info("Выполняется финальное сканирование...")
-        file_infos = scan_filesystem(
-            base_dirs=config["scan"]["dirs_to_scan"],
-            excludes=config["excludes"] + args.exclude,
-            binary_extensions=config["binary_extensions"],
-            max_text_file_size=config["scan"]["max_text_file_size"],
-            min_parallel_size=config["scan"]["min_parallel_size"],
-            max_workers=config["scan"]["max_workers"]
-        )
+        file_infos = scan_filesystem(**scan_params)
         
         save_filesystem_snapshot(file_infos, session_dir, "after")
         copy_text_files_to_git(file_infos, session_dir, "after", config["git"])
