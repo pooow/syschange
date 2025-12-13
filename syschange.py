@@ -303,7 +303,7 @@ def scan_filesystem(
         max_workers: Количество потоков из config.yaml
         collect_hashes: Вычислять ли хэши файлов
     """
-    full_excludes = list(excludes)  # Копируем список исключений из config
+    full_excludes = list(excludes)
     
     results = []
     files_to_hash = []
@@ -403,7 +403,7 @@ def copy_text_files_to_git(
         mode: Режим (before/after)
         git_config: Конфигурация Git из config.yaml
     """
-    if not git_config.get("enabled", True):
+    if not git_config["enabled"]:
         log.info("Git отслеживание отключено в config.yaml")
         return
     
