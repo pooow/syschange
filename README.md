@@ -24,6 +24,14 @@
 
 ### Установка
 
+0. Установите необходимые зависимости (системные пакеты для ALT Linux):
+   ```bash
+   $ su -
+   # apt-get update
+   # apt-get install git python3-module-yaml
+   ```
+
+
 1. Клонируйте репозиторий в `/var/tmp`:
    ```bash
    $ cd /var/tmp
@@ -31,7 +39,7 @@
    $ cd syschange
    ```
 
-2. Установите зависимости (системные пакеты для ALT Linux):
+2. Установите дополнительные пакеты для удобства (системные пакеты для ALT Linux):
    ```bash
    $ su -
    # apt-get update
