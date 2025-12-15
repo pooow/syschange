@@ -3,7 +3,7 @@
 
 """
 syschange.py — Инструмент для создания снимков системы и анализа изменений.
-Версия: 2.3.0
+Версия: 2.3.1 (Hotfix: рекурсия при сканировании)
 """
 
 import argparse
@@ -34,7 +34,7 @@ from src.config import get_config
 # === ВЕРСИЯ СКРИПТА ===
 # ================================
 
-SCRIPT_VERSION = "2.3.0"
+SCRIPT_VERSION = "2.3.1"
 
 # ================================
 # === ЛОГИРОВАНИЕ ===
@@ -293,6 +293,7 @@ def scan_filesystem(
 ) -> List[FileInfo]:
     """
     ЕДИНЫЙ ПРОХОД по файловой системе.
+    Автоматически исключает директорию снимков, чтобы избежать рекурсии.
     
     Args:
         base_dirs: Список директорий для сканирования
@@ -303,7 +304,19 @@ def scan_filesystem(
     Returns:
         Список FileInfo объектов с метаданными и хэшами
     """
-    # Извлекаем параметры из конфигурации
+    # === НОВАЯ ЛОГИКА: Авто-исключение папки снимков ===
+    # Копируем список, чтобы не менять оригинал
+    full_excludes = list(excludes)
+    
+    # Добавляем snapshot_base_dir в исключения
+    try:
+        snapshot_base_dir = Path(config["scan"]["snapshot_base_dir"]).resolve()
+        full_excludes.append(str(snapshot_base_dir))
+        log.debug(f"Автоматически исключена директория снимков: {snapshot_base_dir}")
+    except Exception as e:
+        log.warning(f"Не удалось автоматически исключить snapshot_base_dir: {e}")
+    # ===================================================
+
     min_parallel_size = config["scan"]["min_parallel_size"]
     max_workers = config["scan"]["max_workers"]
     
@@ -320,13 +333,15 @@ def scan_filesystem(
         total_hash_time = 0
         
         for root, dirs, files in os.walk(scan_dir, topdown=True):
-            dirs[:] = [d for d in dirs if not is_excluded(os.path.join(root, d), excludes)]
+            # ВАЖНО: Используем full_excludes для фильтрации директорий
+            dirs[:] = [d for d in dirs if not is_excluded(os.path.join(root, d), full_excludes)]
             
             for item_name in dirs + files:
                 full_path = Path(root) / item_name
                 str_path = str(full_path)
                 
-                if is_excluded(str_path, excludes):
+                # ВАЖНО: Используем full_excludes для фильтрации файлов
+                if is_excluded(str_path, full_excludes):
                     continue
                 
                 try:
