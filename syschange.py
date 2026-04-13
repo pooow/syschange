@@ -47,7 +47,7 @@ def setup_logging(log_file: Optional[Path] = None, level=logging.INFO):
     Если установлена библиотека coloredlogs, вывод будет цветным (удобнее в консоли).
     """
     try:
-        import coloredlogs
+        import coloredlogs  # type: ignore
         coloredlogs.install(level=level, logger=log, fmt='[%(levelname)s] %(message)s')
     except ImportError:
         logging.basicConfig(level=level, format='[%(levelname)s] %(message)s')
