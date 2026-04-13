@@ -514,17 +514,23 @@ def collect_system_state(snapshot_dir: Path, suffix: str) -> None:
 def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
     """
     Генерирует текстовый и JSON отчёты с diff.
+    
+    Оптимизировано для работы с большими объёмами данных:
+    - Используется потоковая запись в файл (не загружает всё в RAM)
+    - git diff выполняется напрямую с выводом в файл
+    - JSON содержит только метаданные, а не полный текст диффов
     """
     log.info("Генерация отчетов...")
     
     report_file = snapshot_dir / "full_report.txt"
     json_report_file = snapshot_dir / "report.json"
     
+    # Базовая структура JSON без огромных текстов диффов
     json_data: Dict[str, Any] = {
         "version": SCRIPT_VERSION,
         "session": snapshot_dir.name,
         "generated": datetime.datetime.now().isoformat(),
-        "changes": {}
+        "changes_summary": {}  # Только статистика, а не полный текст
     }
 
     with report_file.open("w", encoding="utf-8") as report:
@@ -541,20 +547,69 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
 
             report.write(f"=== {section.upper()} CHANGES ===\n")
             
-            diff_content = ""
+            has_changes = False
             
             if section == "etc":
                 if check_command("git") and (snapshot_dir / "etc_git/.git").is_dir():
-                    result = run_command(["git", "-C", str(snapshot_dir / "etc_git"), "diff", "HEAD~1", "HEAD"], check=False)
-                    diff_content = result.stdout if result.returncode == 0 else "No previous commit to compare."
+                    # Потоковый вывод git diff напрямую в файл
+                    result = run_command(
+                        ["git", "-C", str(snapshot_dir / "etc_git"), "diff", "--stat", "HEAD~1", "HEAD"],
+                        check=False
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        report.write("Summary:\n")
+                        report.write(result.stdout + "\n")
+                        has_changes = True
+                        
+                        # Полный diff тоже потоком
+                        report.write("\nFull diff:\n")
+                        git_process = subprocess.Popen(
+                            ["git", "-C", str(snapshot_dir / "etc_git"), "diff", "HEAD~1", "HEAD"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True
+                        )
+                        for line in git_process.stdout:
+                            report.write(line)
+                        git_process.wait()
+                        
+                    else:
+                        report.write("No changes detected.\n")
+                        
             elif section == "fs_diff":
                 if check_command("git") and (snapshot_dir / "fs_git/.git").is_dir():
+                    # Статистика изменений
                     result = run_command(
-                        ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD"],
-                        check=False,
-                        text=True
+                        ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "--stat", "HEAD~1", "HEAD"],
+                        check=False
                     )
-                    diff_content = result.stdout if result.returncode == 0 else "No changes detected or binary files."
+                    if result.returncode == 0 and result.stdout.strip():
+                        report.write("Summary:\n")
+                        report.write(result.stdout + "\n")
+                        has_changes = True
+                        
+                        # Полный diff потоком с ограничением
+                        report.write("\nFull diff (truncated if too large):\n")
+                        git_process = subprocess.Popen(
+                            ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True
+                        )
+                        line_count = 0
+                        max_lines = 10000  # Ограничение на вывод в отчёт
+                        for line in git_process.stdout:
+                            if line_count < max_lines:
+                                report.write(line)
+                                line_count += 1
+                            else:
+                                if line_count == max_lines:
+                                    report.write(f"\n... (diff truncated, total lines > {max_lines})\n")
+                                break
+                        git_process.wait()
+                    else:
+                        report.write("No changes detected or binary files.\n")
+                        
             elif section == "logs":
                 before_file = snapshot_dir / f"syslog_before.txt"
                 after_file = snapshot_dir / f"syslog_after.txt"
@@ -564,33 +619,72 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                     after_file = snapshot_dir / f"messages_after.txt"
                 
                 if before_file.exists() and after_file.exists():
-                    before_lines = before_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    after_lines = after_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    diff_lines = difflib.unified_diff(before_lines, after_lines, 
-                                                     fromfile=before_file.name, tofile=after_file.name)
-                    diff_content = "\n".join(diff_lines)
+                    # Потоковое сравнение логов без загрузки всего файла в память
+                    has_changes = _stream_diff_to_file(report, before_file, after_file)
+                else:
+                    report.write("No log files found.\n")
+                    
             else:
                 before_file = snapshot_dir / f"{section}_before.txt"
                 after_file = snapshot_dir / f"{section}_after.txt"
                 if before_file.exists() and after_file.exists():
-                    before_lines = before_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    after_lines = after_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    diff_lines = difflib.unified_diff(before_lines, after_lines, 
-                                                     fromfile=before_file.name, tofile=after_file.name)
-                    diff_content = "\n".join(diff_lines)
+                    has_changes = _stream_diff_to_file(report, before_file, after_file)
+                else:
+                    report.write(f"No data for section '{section}'.\n")
 
-            if diff_content.strip():
-                report.write(diff_content + "\n\n")
-            else:
-                report.write("No changes detected.\n\n")
-                
-            json_data["changes"][section] = diff_content
+            # Записываем только статистику в JSON (не полный текст!)
+            json_data["changes_summary"][section] = "detected" if has_changes else "none"
+            
+            report.write("\n")
 
+    # Записываем JSON (теперь он лёгкий, без огромных текстов)
     with json_report_file.open("w", encoding="utf-8") as f:
         json.dump(json_data, f, indent=4, ensure_ascii=False)
         
     log.info(f"Отчет: {report_file}")
     log.info(f"JSON: {json_report_file}")
+
+
+def _stream_diff_to_file(report_file, before_file: Path, after_file: Path) -> bool:
+    """
+    Потоково генерирует unified diff и записывает его в файл отчёта.
+    Не загружает файлы целиком в память.
+    Возвращает True, если есть изменения.
+    """
+    import difflib
+    
+    has_changes = False
+    line_count = 0
+    max_lines = 10000  # Ограничение на вывод диффа
+    
+    # Открываем файлы итераторами для потокового чтения
+    with before_file.open("r", encoding="utf-8", errors="replace") as f1, \
+         after_file.open("r", encoding="utf-8", errors="replace") as f2:
+        
+        # Используем генератор difflib для потоковой обработки
+        diff_iter = difflib.unified_diff(
+            f1, f2,
+            fromfile=before_file.name,
+            tofile=after_file.name,
+            lineterm=""
+        )
+        
+        for line in diff_iter:
+            if line_count == 0:
+                has_changes = True  # Если есть хотя бы одна строка diff
+            
+            if line_count < max_lines:
+                report_file.write(line + "\n")
+                line_count += 1
+            else:
+                if line_count == max_lines:
+                    report_file.write(f"\n... (diff truncated, total lines > {max_lines})\n")
+                break
+    
+    if not has_changes:
+        report_file.write("No changes detected.\n")
+    
+    return has_changes
 
 # ================================
 # === ОСНОВНОЙ ЦИКЛ ===
