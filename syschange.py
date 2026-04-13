@@ -520,11 +520,12 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
     report_file = snapshot_dir / "full_report.txt"
     json_report_file = snapshot_dir / "report.json"
     
+    # Базовая структура JSON без огромных текстов диффов
     json_data: Dict[str, Any] = {
         "version": SCRIPT_VERSION,
         "session": snapshot_dir.name,
         "generated": datetime.datetime.now().isoformat(),
-        "changes": {}
+        "changes_summary": {}  # Только статистика, а не полный текст
     }
 
     with report_file.open("w", encoding="utf-8") as report:
@@ -541,20 +542,88 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
 
             report.write(f"=== {section.upper()} CHANGES ===\n")
             
-            diff_content = ""
+            has_changes = False
             
             if section == "etc":
                 if check_command("git") and (snapshot_dir / "etc_git/.git").is_dir():
-                    result = run_command(["git", "-C", str(snapshot_dir / "etc_git"), "diff", "HEAD~1", "HEAD"], check=False)
-                    diff_content = result.stdout if result.returncode == 0 else "No previous commit to compare."
+                    # Потоковый вывод git diff напрямую в файл через PIPE
+                    report.write("Summary:\n")
+                    subprocess.run(
+                        ["git", "-C", str(snapshot_dir / "etc_git"), "diff", "--stat", "HEAD~1", "HEAD"],
+                        stdout=report, stderr=subprocess.STDOUT
+                    )
+                    
+                    report.write("\nFull diff:\n")
+                    with subprocess.Popen(
+                        ["git", "-C", str(snapshot_dir / "etc_git"), "diff", "HEAD~1", "HEAD"],
+                        stdout=subprocess.PIPE, text=True, errors='replace'
+                    ) as proc:
+                        for line in proc.stdout:
+                            report.write(line)
+                            has_changes = True
+                        
             elif section == "fs_diff":
                 if check_command("git") and (snapshot_dir / "fs_git/.git").is_dir():
-                    result = run_command(
-                        ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD"],
-                        check=False,
-                        text=True
+                    report.write("Summary STATS:\n")
+                    subprocess.run(
+                        ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "--stat", "HEAD~1", "HEAD"],
+                        stdout=report, stderr=subprocess.STDOUT
                     )
-                    diff_content = result.stdout if result.returncode == 0 else "No changes detected or binary files."
+                    
+                    # ГРАНУЛЯРНЫЙ JSON: получаем список файлов и их статусов
+                    status_result = subprocess.run(
+                        ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "--name-status", "HEAD~1", "HEAD"],
+                        capture_output=True, text=True, errors='replace'
+                    )
+                    
+                    fs_changes = []
+                    if status_result.returncode == 0:
+                        lines = status_result.stdout.strip().split('\n')
+                        for line in lines:
+                            if not line.strip(): continue
+                            parts = line.split('\t')
+                            if len(parts) < 2: continue
+                            
+                            status_code = parts[0] # A - Added, M - Modified, D - Deleted
+                            file_path = parts[1]
+                            
+                            change_item = {"path": file_path, "status": "unknown"}
+                            
+                            if status_code.startswith('M'):
+                                change_item["status"] = "modified"
+                                # Для измененных файлов тянем дифф (лимитированно)
+                                f_diff = subprocess.run(
+                                    ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD", "--", file_path],
+                                    capture_output=True, text=True, errors='replace'
+                                )
+                                change_item["diff"] = f_diff.stdout[:5000] # Лимит 5кб на один файл в JSON
+                            elif status_code.startswith('A'):
+                                change_item["status"] = "added"
+                            elif status_code.startswith('D'):
+                                change_item["status"] = "deleted"
+                            
+                            fs_changes.append(change_item)
+                            has_changes = True
+
+                    json_data["fs_changes"] = fs_changes
+                    
+                    # Полный дифф в текстовый отчет по-прежнему идет потоком для чтения
+                    report.write("\nFull DIFF for human reading (truncated if >10k lines):\n")
+                    with subprocess.Popen(
+                        ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD"],
+                        stdout=subprocess.PIPE, text=True, errors='replace'
+                    ) as proc:
+                        line_count = 0
+                        max_lines = 10000
+                        for line in proc.stdout:
+                            if line_count < max_lines:
+                                report.write(line)
+                                line_count += 1
+                            else:
+                                report.write(f"\n... (txt report diff truncated, total lines > {max_lines})\n")
+                                proc.terminate()
+                                break
+                        
             elif section == "logs":
                 before_file = snapshot_dir / f"syslog_before.txt"
                 after_file = snapshot_dir / f"syslog_after.txt"
@@ -564,33 +633,67 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                     after_file = snapshot_dir / f"messages_after.txt"
                 
                 if before_file.exists() and after_file.exists():
-                    before_lines = before_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    after_lines = after_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    diff_lines = difflib.unified_diff(before_lines, after_lines, 
-                                                     fromfile=before_file.name, tofile=after_file.name)
-                    diff_content = "\n".join(diff_lines)
+                    has_changes = _stream_diff_to_file(report, before_file, after_file)
+                else:
+                    report.write("No log files found.\n")
+                    
             else:
                 before_file = snapshot_dir / f"{section}_before.txt"
                 after_file = snapshot_dir / f"{section}_after.txt"
                 if before_file.exists() and after_file.exists():
-                    before_lines = before_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    after_lines = after_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                    diff_lines = difflib.unified_diff(before_lines, after_lines, 
-                                                     fromfile=before_file.name, tofile=after_file.name)
-                    diff_content = "\n".join(diff_lines)
+                    has_changes = _stream_diff_to_file(report, before_file, after_file)
+                else:
+                    report.write(f"No data for section '{section}'.\n")
 
-            if diff_content.strip():
-                report.write(diff_content + "\n\n")
-            else:
-                report.write("No changes detected.\n\n")
-                
-            json_data["changes"][section] = diff_content
+            # Записываем только статистику в JSON
+            json_data["changes_summary"][section] = "detected" if has_changes else "none"
+            report.write("\n")
 
     with json_report_file.open("w", encoding="utf-8") as f:
         json.dump(json_data, f, indent=4, ensure_ascii=False)
         
     log.info(f"Отчет: {report_file}")
     log.info(f"JSON: {json_report_file}")
+
+
+def _stream_diff_to_file(report_file, before_file: Path, after_file: Path) -> bool:
+    """
+    Оптимизированная версия: использует системный diff для экономии памяти.
+    """
+    import subprocess
+    
+    if not before_file.exists() or not after_file.exists():
+        return False
+
+    cmd = ["diff", "-u", str(before_file), str(after_file)]
+    
+    has_changes = False
+    try:
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors='replace') as proc:
+            line_count = 0
+            max_lines = 10000
+            
+            for line in proc.stdout:
+                has_changes = True
+                if line_count < max_lines:
+                    report_file.write(line)
+                    line_count += 1
+                elif line_count == max_lines:
+                    report_file.write(f"\n... (diff truncated, total lines > {max_lines})\n")
+                    line_count += 1
+                    proc.terminate()
+                    break
+            
+            proc.wait()
+            if proc.returncode == 1:
+                has_changes = True
+    except Exception as e:
+        report_file.write(f"Error running system diff: {e}\n")
+    
+    if not has_changes:
+        report_file.write("No changes detected.\n")
+    
+    return has_changes
 
 # ================================
 # === ОСНОВНОЙ ЦИКЛ ===
