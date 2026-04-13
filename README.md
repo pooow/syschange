@@ -184,9 +184,9 @@ scan:
 <summary>📄 Пример вывода full_report.txt (с цветом через delta)</summary>
 
 ```diff
-System Snapshot Report v2.2.5
+System Snapshot Report v2.3.1
 Session: ca_deploy
-Generated: 2025-12-12 12:49:12
+Generated: 2026-04-13 12:49:12
 
 ════════════════════════════════════════════════════════════════════════════════
 PACKAGES CHANGES
@@ -250,17 +250,20 @@ PORTS CHANGES
 
 ```json
 {
-  "version": "2.2.5",
+  "version": "2.3.1",
   "session": "ca_deploy",
-  "generated": "2025-12-12T12:49:12.098980",
-  "changes": {
-    "packages": "",
-    "processes": "30+ new processes (PostgreSQL, Keycloak, Java services)",
-    "services": "12 new systemd services: postgresql, keycloak, ca-eureka, ca-core, ca-gateway, ca-ui, ca-cep, ca-ces, ca-scep, ca-ocsp, ca-acme, ca-ssh",
-    "ports": "20+ new listening ports: 5432 (PostgreSQL), 8081/8443 (Keycloak), 8761 (Eureka), 9080-9087 (CA services)",
-    "fs_metadata": "500+ new files in /opt/keycloak, /opt/st-ca, /var/lib/pgsql/data",
-    "fs_hashes": "600+ new/changed files"
-  }
+  "generated": "2026-04-13T12:49:12.098980",
+  "changes_summary": {
+    "packages": "none",
+    "processes": "detected",
+    "services": "detected",
+    "fs_diff": "detected"
+  },
+  "fs_changes": [
+    { "path": "/usr/bin/htop", "status": "added" },
+    { "path": "/etc/status.conf", "status": "modified", "diff": "--- before...\n+++ after..." },
+    { "path": "/var/log/old.log", "status": "deleted" }
+  ]
 }
 ```
 
