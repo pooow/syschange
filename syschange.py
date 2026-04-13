@@ -524,7 +524,7 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
         "version": SCRIPT_VERSION,
         "session": snapshot_dir.name,
         "generated": datetime.datetime.now().isoformat(),
-        "changes_summary": {}  # Только статистика, а не полный текст
+        "changes": {}  # Статистика изменений (для совместимости со старыми скриптами)
     }
 
     with report_file.open("w", encoding="utf-8") as report:
@@ -644,8 +644,8 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                 else:
                     report.write(f"No data for section '{section}'.\n")
 
-            # Записываем только статистику в JSON
-            json_data["changes_summary"][section] = "detected" if has_changes else "none"
+            # Записываем статистику (были изменения или нет)
+            json_data["changes"][section] = "detected" if has_changes else "none"
             report.write("\n")
 
     with json_report_file.open("w", encoding="utf-8") as f:
