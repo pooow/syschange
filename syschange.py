@@ -9,7 +9,6 @@ syschange.py — Инструмент для создания снимков с�
 import argparse
 import concurrent.futures
 import datetime
-import difflib
 import fnmatch
 import hashlib
 import json
