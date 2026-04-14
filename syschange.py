@@ -3,7 +3,7 @@
 
 """
 syschange.py — Инструмент для создания снимков системы и анализа изменений.
-Версия: 2.3.1 (Hotfix: рекурсия при сканировании)
+Версия: 2.3.5 (Full JSON + Time Metrics)
 """
 
 import argparse
@@ -33,7 +33,7 @@ from src.config import get_config
 # === ВЕРСИЯ СКРИПТА ===
 # ================================
 
-SCRIPT_VERSION = "2.3.1"
+SCRIPT_VERSION = "2.3.5"
 
 # ================================
 # === ЛОГИРОВАНИЕ ===
@@ -268,6 +268,7 @@ class FileInfo:
     stat_result: os.stat_result
     is_text: bool
     hash_value: Optional[str] = None
+    symlink_target: Optional[str] = None
 
 def get_file_hash(path: Path) -> Optional[str]:
     """
@@ -344,8 +345,14 @@ def scan_filesystem(
                     continue
                 
                 try:
-                    stat_info = full_path.stat()
+                    stat_info = full_path.lstat()
                     
+                    if stat.S_ISLNK(stat_info.st_mode):
+                        target = os.readlink(full_path)
+                        file_info = FileInfo(path=full_path, stat_result=stat_info, is_text=False, symlink_target=target)
+                        results.append(file_info)
+                        continue
+                        
                     if full_path.is_file():
                         is_text = is_text_file(full_path, config)
                         file_info = FileInfo(path=full_path, stat_result=stat_info, is_text=is_text)
@@ -395,8 +402,12 @@ def save_filesystem_snapshot(file_infos: List[FileInfo], snapshot_dir: Path, suf
     with fs_path.open("w") as fs_file, hashes_path.open("w") as hashes_file:
         for info in file_infos:
             stat_info = info.stat_result
+            path_str = str(info.path)
+            if info.symlink_target:
+                path_str = f"{path_str} -> {info.symlink_target}"
+                
             fs_file.write(
-                f"{info.path} {int(stat_info.st_mtime)} {int(stat_info.st_ctime)} "
+                f"{path_str} {int(stat_info.st_mtime)} {int(stat_info.st_ctime)} "
                 f"{get_username(stat_info.st_uid)} {get_groupname(stat_info.st_gid)} "
                 f"{format_permissions(stat_info.st_mode)} {stat_info.st_size}\n"
             )
@@ -510,6 +521,22 @@ def collect_system_state(snapshot_dir: Path, suffix: str) -> None:
 # === ГЕНЕРАЦИЯ ОТЧЁТОВ ===
 # ================================
 
+
+def load_fs_snapshot(path: Path) -> dict:
+    snapshot = {}
+    if not path.exists(): return snapshot
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            parts = line.rsplit(" ", 6)
+            if len(parts) < 7: continue
+            snapshot[parts[0]] = {
+                "mtime": parts[1], "ctime": parts[2], "user": parts[3],
+                "group": parts[4], "mode": parts[5], "size": parts[6]
+            }
+    return snapshot
+
 def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
     """
     Генерирует текстовый и JSON отчёты с diff.
@@ -569,37 +596,60 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                         stdout=report, stderr=subprocess.STDOUT
                     )
                     
-                    # ГРАНУЛЯРНЫЙ JSON: получаем список файлов и их статусов
+                    # ГРАНУЛЯРНЫЙ JSON С УЧЕТОМ ВСЕХ ФАЙЛОВ И МЕТАДАННЫХ
+                    before_fs = load_fs_snapshot(snapshot_dir / "fs_before.txt")
+                    after_fs = load_fs_snapshot(snapshot_dir / "fs_after.txt")
+                    
+                    fs_changes = []
+                    all_paths = sorted(set(before_fs.keys()) | set(after_fs.keys()))
+                    
+                    git_changes = {}
                     status_result = subprocess.run(
                         ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "--name-status", "HEAD~1", "HEAD"],
                         capture_output=True, text=True, errors='replace'
                     )
-                    
-                    fs_changes = []
                     if status_result.returncode == 0:
-                        lines = status_result.stdout.strip().split('\n')
-                        for line in lines:
+                        for line in status_result.stdout.strip().split('\n'):
                             if not line.strip(): continue
                             parts = line.split('\t')
-                            if len(parts) < 2: continue
+                            if len(parts) >= 2:
+                                git_changes[parts[1]] = parts[0]
+
+                    for p in all_paths:
+                        item_before = before_fs.get(p)
+                        item_after = after_fs.get(p)
+                        
+                        change_item = {"path": p}
+                        is_changed = False
+                        
+                        if not item_before:
+                            change_item["status"] = "added"
+                            change_item["meta"] = item_after
+                            is_changed = True
+                        elif not item_after:
+                            change_item["status"] = "deleted"
+                            change_item["meta"] = item_before
+                            is_changed = True
+                        else:
+                            meta_diff = {}
+                            for key in ["mode", "user", "group", "size", "mtime", "symlink_target"]:
+                                if item_before.get(key) != item_after.get(key):
+                                    meta_diff[key] = {"before": item_before.get(key), "after": item_after.get(key)}
                             
-                            status_code = parts[0] # A - Added, M - Modified, D - Deleted
-                            file_path = parts[1]
-                            
-                            change_item = {"path": file_path, "status": "unknown"}
-                            
-                            if status_code.startswith('M'):
+                            if meta_diff or p in git_changes:
                                 change_item["status"] = "modified"
-                                # Для измененных файлов тянем дифф (лимитированно)
+                                if meta_diff:
+                                    change_item["meta_changes"] = meta_diff
+                                is_changed = True
+
+                        if is_changed:
+                            git_p = p.lstrip('/')
+                            if git_p in git_changes:
                                 f_diff = subprocess.run(
-                                    ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD", "--", file_path],
+                                    ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD", "--", git_p],
                                     capture_output=True, text=True, errors='replace'
                                 )
-                                change_item["diff"] = f_diff.stdout[:5000] # Лимит 5кб на один файл в JSON
-                            elif status_code.startswith('A'):
-                                change_item["status"] = "added"
-                            elif status_code.startswith('D'):
-                                change_item["status"] = "deleted"
+                                change_item["diff"] = f_diff.stdout[:5000] # Лимит 5кб
                             
                             fs_changes.append(change_item)
                             has_changes = True
@@ -723,6 +773,10 @@ def main() -> None:
     parser_after.add_argument("sections", nargs="?", default="all", help="Разделы через запятую ('all' по умолчанию).")
     parser_after.add_argument("--exclude", action="append", default=[], help="Исключить директорию.")
 
+    parser_report = subparsers.add_parser("report", help="Перегенерация отчетов на основе существующих снимков.")
+    parser_report.add_argument("session_name", help="Имя сессии.")
+    parser_report.add_argument("sections", nargs="?", default="all", help="Разделы через запятую ('all' по умолчанию).")
+
     args = parser.parse_args()
 
     # Получаем параметры из конфигурации
@@ -774,6 +828,16 @@ def main() -> None:
         sections_to_report = args.sections.split(',') if args.sections else ['all']
         generate_reports(session_dir, sections_to_report)
         log.info("Финальный снимок и отчёты созданы.")
+    
+    elif args.command == "report":
+        if not (session_dir / "fs_before.txt").exists() or not (session_dir / "fs_after.txt").exists():
+            log.error(f"Файлы снимков для сессии '{args.session_name}' не найдены в {session_dir}")
+            sys.exit(1)
+        
+        log.info(f"Генерация отчетов для существующей сессии '{args.session_name}'...")
+        sections_to_report = args.sections.split(',') if args.sections else ['all']
+        generate_reports(session_dir, sections_to_report)
+        log.info("Отчёты успешно обновлены.")
     
     log.info("Завершено.")
 
