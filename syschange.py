@@ -3,7 +3,7 @@
 
 """
 syschange.py — Инструмент для создания снимков системы и анализа изменений.
-Версия: 2.3.5 (Full JSON + Time Metrics)
+Версия: 2.3.6
 """
 
 import argparse
@@ -24,7 +24,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 # Импорт конфигурации из src/config.py
 from src.config import get_config
@@ -33,7 +33,7 @@ from src.config import get_config
 # === ВЕРСИЯ СКРИПТА ===
 # ================================
 
-SCRIPT_VERSION = "2.3.5"
+SCRIPT_VERSION = "2.3.6"
 
 # ================================
 # === ЛОГИРОВАНИЕ ===
@@ -580,13 +580,18 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                     )
                     
                     report.write("\nFull diff:\n")
+                    captured_diff = []
                     with subprocess.Popen(
                         ["git", "-C", str(snapshot_dir / "etc_git"), "diff", "HEAD~1", "HEAD"],
                         stdout=subprocess.PIPE, text=True, errors='replace'
                     ) as proc:
                         for line in proc.stdout:
                             report.write(line)
+                            if len(captured_diff) < 10000:
+                                captured_diff.append(line)
                             has_changes = True
+                    
+                    json_data["changes"][section] = "".join(captured_diff) if has_changes else "none"
                         
             elif section == "fs_diff":
                 if check_command("git") and (snapshot_dir / "fs_git/.git").is_dir():
@@ -682,20 +687,21 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                     after_file = snapshot_dir / f"messages_after.txt"
                 
                 if before_file.exists() and after_file.exists():
-                    has_changes = _stream_diff_to_file(report, before_file, after_file)
+                    has_changes, diff_text = _stream_diff_to_file(report, before_file, after_file)
+                    json_data["changes"][section] = diff_text if has_changes else "none"
                 else:
                     report.write("No log files found.\n")
+                    json_data["changes"][section] = "none"
                     
             else:
                 before_file = snapshot_dir / f"{section}_before.txt"
                 after_file = snapshot_dir / f"{section}_after.txt"
                 if before_file.exists() and after_file.exists():
-                    has_changes = _stream_diff_to_file(report, before_file, after_file)
+                    has_changes, diff_text = _stream_diff_to_file(report, before_file, after_file)
+                    json_data["changes"][section] = diff_text if has_changes else "none"
                 else:
                     report.write(f"No data for section '{section}'.\n")
-
-            # Записываем статистику (были изменения или нет)
-            json_data["changes"][section] = "detected" if has_changes else "none"
+                    json_data["changes"][section] = "none"
             report.write("\n")
 
     with json_report_file.open("w", encoding="utf-8") as f:
@@ -705,18 +711,20 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
     log.info(f"JSON: {json_report_file}")
 
 
-def _stream_diff_to_file(report_file, before_file: Path, after_file: Path) -> bool:
+def _stream_diff_to_file(report_file, before_file: Path, after_file: Path) -> Tuple[bool, str]:
     """
     Оптимизированная версия: использует системный diff для экономии памяти.
+    Возвращает (has_changes, captured_diff).
     """
     import subprocess
     
     if not before_file.exists() or not after_file.exists():
-        return False
+        return False, ""
 
     cmd = ["diff", "-u", str(before_file), str(after_file)]
     
     has_changes = False
+    captured_diff = []
     try:
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors='replace') as proc:
             line_count = 0
@@ -726,6 +734,7 @@ def _stream_diff_to_file(report_file, before_file: Path, after_file: Path) -> bo
                 has_changes = True
                 if line_count < max_lines:
                     report_file.write(line)
+                    captured_diff.append(line)
                     line_count += 1
                 elif line_count == max_lines:
                     report_file.write(f"\n... (diff truncated, total lines > {max_lines})\n")
@@ -742,7 +751,7 @@ def _stream_diff_to_file(report_file, before_file: Path, after_file: Path) -> bo
     if not has_changes:
         report_file.write("No changes detected.\n")
     
-    return has_changes
+    return has_changes, "".join(captured_diff)
 
 # ================================
 # === ОСНОВНОЙ ЦИКЛ ===
@@ -791,12 +800,13 @@ def main() -> None:
 
     log.info(f"Запуск '{args.command}' для сессии '{args.session_name}'")
 
-    # Подготовка общих параметров для сканирования
-    scan_params = {
-        "base_dirs": config["scan"]["dirs_to_scan"],
-        "excludes": config["excludes"] + args.exclude,
-        "config": config
-    }
+    # Подготовка общих параметров для сканирования (только для команд сканирования)
+    if args.command in ["before", "after"]:
+        scan_params = {
+            "base_dirs": config["scan"]["dirs_to_scan"],
+            "excludes": config["excludes"] + args.exclude,
+            "config": config
+        }
 
     if args.command == "before":
         install_git()
