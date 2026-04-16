@@ -3,7 +3,7 @@
 
 """
 syschange.py — Инструмент для создания снимков системы и анализа изменений.
-Версия: 2.3.6
+Версия: 2.3.7
 """
 
 import argparse
@@ -33,7 +33,7 @@ from src.config import get_config
 # === ВЕРСИЯ СКРИПТА ===
 # ================================
 
-SCRIPT_VERSION = "2.3.6"
+SCRIPT_VERSION = "2.3.7"
 
 # ================================
 # === ЛОГИРОВАНИЕ ===
@@ -663,6 +663,7 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                     
                     # Полный дифф в текстовый отчет по-прежнему идет потоком для чтения
                     report.write("\nFull DIFF for human reading (truncated if >10k lines):\n")
+                    captured_fs_diff = []
                     with subprocess.Popen(
                         ["git", "-C", str(snapshot_dir / "fs_git"), "diff", "HEAD~1", "HEAD"],
                         stdout=subprocess.PIPE, text=True, errors='replace'
@@ -672,11 +673,14 @@ def generate_reports(snapshot_dir: Path, sections: List[str]) -> None:
                         for line in proc.stdout:
                             if line_count < max_lines:
                                 report.write(line)
+                                captured_fs_diff.append(line)
                                 line_count += 1
                             else:
                                 report.write(f"\n... (txt report diff truncated, total lines > {max_lines})\n")
                                 proc.terminate()
                                 break
+                    
+                    json_data["changes"][section] = "".join(captured_fs_diff) if has_changes else "none"
                         
             elif section == "logs":
                 before_file = snapshot_dir / f"syslog_before.txt"
