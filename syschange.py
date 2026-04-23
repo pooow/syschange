@@ -447,6 +447,7 @@ def copy_text_files_to_git(
         run_command(["git", "-C", str(git_dir), "init", "-q"])
         run_command(["git", "-C", str(git_dir), "config", "user.email", git_config["user_email"]])
         run_command(["git", "-C", str(git_dir), "config", "user.name", git_config["user_name"]])
+        run_command(["git", "-C", str(git_dir), "config", "core.quotepath", "false"])
 
     copied_count = 0
     skipped_count = 0
