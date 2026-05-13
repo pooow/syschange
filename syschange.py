@@ -816,6 +816,7 @@ def main() -> None:
     if args.command == "before":
         install_git()
         
+        start_snapshot = time.perf_counter()
         collect_system_state(session_dir, "before")
         
         # ЕДИНЫЙ ПРОХОД по файловой системе
@@ -824,7 +825,8 @@ def main() -> None:
         save_filesystem_snapshot(file_infos, session_dir, "before")
         copy_text_files_to_git(file_infos, session_dir, "before", config["git"])
         
-        log.info("Базовый снимок создан успешно.")
+        duration = time.perf_counter() - start_snapshot
+        log.info(f"Базовый снимок создан успешно за {duration:.2f} сек.")
         log.info(f"Для отчёта запустите: ./{Path(__file__).name} after {args.session_name}")
 
     elif args.command == "after":
@@ -832,6 +834,7 @@ def main() -> None:
             log.error("Базовый снимок не найден! Сначала запустите 'before'.")
             sys.exit(1)
         
+        start_snapshot = time.perf_counter()
         collect_system_state(session_dir, "after")
         
         log.info("Выполняется финальное сканирование...")
@@ -839,6 +842,9 @@ def main() -> None:
         
         save_filesystem_snapshot(file_infos, session_dir, "after")
         copy_text_files_to_git(file_infos, session_dir, "after", config["git"])
+        
+        duration = time.perf_counter() - start_snapshot
+        log.info(f"Финальный снимок создан успешно за {duration:.2f} сек.")
         
         sections_to_report = args.sections.split(',') if args.sections else ['all']
         generate_reports(session_dir, sections_to_report)
