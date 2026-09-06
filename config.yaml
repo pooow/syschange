@@ -46,6 +46,10 @@ excludes:
   - "/var/log/journal/"           # Бинарные журналы systemd
   - "/var/lib/samba/msg.lock/*"   # Lock-файлы Samba
   - "/var/lib/samba/private/msg.sock/"  # Сокеты Samba
+  - "/var/lib/docker/overlay2"    # Слои Docker OverlayFS (шум гостевых ОС)
+  - "/var/lib/docker/image"       # Кэш образов Docker
+  - "/var/lib/containers/storage/overlay" # Слои Podman/CRI-O OverlayFS
+  - "/var/lib/containers/storage/overlay-images" # Кэш образов Podman
 
 # Настройки Git-репозитория для отслеживания текстовых файлов
 git:
